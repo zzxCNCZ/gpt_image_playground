@@ -2,6 +2,7 @@
 
 export type ApiMode = 'images' | 'responses'
 export type AppMode = 'gallery' | 'agent'
+export type AgentApiConfigMode = 'off' | 'native' | 'hybrid'
 export type ReferenceImageEditAction = 'ask' | 'replace-reference' | 'add-mask'
 export const ZIP_DOWNLOAD_ROUTE_VALUES = [
   'task-selection',
@@ -108,6 +109,9 @@ export interface AppSettings {
   agentMaxToolRounds: number
   agentWebSearch: boolean
   agentMathFormattingPrompt: boolean
+  agentApiConfigMode: AgentApiConfigMode
+  agentTextProfileId?: string | null
+  agentImageProfileId?: string | null
   profiles: ApiProfile[]
   activeProfileId: string
 }

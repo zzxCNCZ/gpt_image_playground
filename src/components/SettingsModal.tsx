@@ -16,6 +16,7 @@ import {
   getActiveApiProfile,
   importCustomProviderSettingsFromJson,
   isDefaultConfigOnlyEnabled,
+  isAgentTextApiProfile,
   isOpenAICompatibleProvider,
   mergeImportedSettings,
   normalizeAgentMaxToolRounds,
@@ -26,7 +27,7 @@ import {
 } from '../lib/apiProfiles'
 import { copyTextToClipboard, getClipboardFailureMessage } from '../lib/clipboard'
 import { requestBrowserNotificationPermission, type BrowserNotificationPermissionResult } from '../lib/browserNotification'
-import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ZipDownloadRoute } from '../types'
+import { DEFAULT_AGENT_MAX_TOOL_ROUNDS, DEFAULT_STREAM_PARTIAL_IMAGES, type AgentApiConfigMode, type ApiProfile, type AppSettings, type CustomProviderDefinition, type ZipDownloadRoute } from '../types'
 import { useCloseOnEscape } from '../hooks/useCloseOnEscape'
 import { usePreventBackgroundScroll } from '../hooks/usePreventBackgroundScroll'
 import { DEFAULT_DROPDOWN_MAX_HEIGHT, getDropdownMaxHeight } from '../lib/dropdown'
@@ -408,6 +409,21 @@ export default function SettingsModal() {
     ? `已开启 ${enabledZipDownloadRouteCount} 项使用压缩包进行批量下载的途径`
     : '未开启任何使用压缩包进行批量下载的途径'
 
+  const agentTextProfiles = draft.profiles.filter(isAgentTextApiProfile)
+  const selectedAgentTextProfile = agentTextProfiles.find((profile) => profile.id === draft.agentTextProfileId)
+    ?? (isAgentTextApiProfile(activeProfile) ? activeProfile : agentTextProfiles[0])
+    ?? null
+  const selectedAgentImageProfile = draft.profiles.find((profile) => profile.id === draft.agentImageProfileId)
+    ?? activeProfile
+  const agentTextProfileOptions = agentTextProfiles.map((profile) => ({
+    label: `${profile.name} · ${profile.model || DEFAULT_RESPONSES_MODEL}`,
+    value: profile.id,
+  }))
+  const agentImageProfileOptions = draft.profiles.map((profile) => ({
+    label: `${profile.name} · ${getApiProviderLabel(draft, profile.provider)} · ${profile.model}`,
+    value: profile.id,
+  }))
+
   const wasSettingsOpenRef = useRef(false)
 
   useEffect(() => {
@@ -768,6 +784,15 @@ export default function SettingsModal() {
     })
     commitSettings(nextDraft)
     setShowProfileMenu(false)
+  }
+
+  const updateAgentApiConfigMode = (mode: AgentApiConfigMode) => {
+    commitSettings({
+      ...draft,
+      agentApiConfigMode: mode,
+      agentTextProfileId: mode !== 'off' ? selectedAgentTextProfile?.id ?? draft.agentTextProfileId : draft.agentTextProfileId,
+      agentImageProfileId: mode === 'hybrid' ? selectedAgentImageProfile?.id ?? draft.agentImageProfileId : draft.agentImageProfileId,
+    })
   }
 
   const duplicateActiveProfile = () => {
@@ -1218,7 +1243,7 @@ export default function SettingsModal() {
                 <div className="hidden sm:block">
                   <div className="mb-1 flex items-center justify-between">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">任务提交方式</span>
-                    <div className="w-32">
+                    <div className="w-28 shrink-0">
                       <Select
                         value={draft.enterSubmit ? 'enter' : 'ctrl-enter'}
                         onChange={(val) => commitSettings({ ...draft, enterSubmit: val === 'enter' })}
@@ -1237,7 +1262,7 @@ export default function SettingsModal() {
                 <div className="sm:hidden">
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">任务提交方式</span>
-                    <div className="w-36">
+                    <div className="w-28 shrink-0">
                       <Select
                         value={draft.enterSubmit ? 'enter' : 'button'}
                         onChange={(val) => commitSettings({ ...draft, enterSubmit: val === 'enter' })}
@@ -1274,7 +1299,7 @@ export default function SettingsModal() {
                 <div className="block">
                   <div className="mb-1 flex items-center justify-between gap-3">
                     <span className="block text-sm text-gray-600 dark:text-gray-300">参考图编辑按钮</span>
-                    <div className="w-32">
+                    <div className="w-28 shrink-0">
                       <Select
                         value={draft.referenceImageEditAction}
                         onChange={(val) => commitSettings({ ...draft, referenceImageEditAction: val as AppSettings['referenceImageEditAction'] })}
@@ -1419,6 +1444,73 @@ export default function SettingsModal() {
 
             {activeTab === 'agent' && (
               <div className="space-y-4">
+                <div className="block">
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <span className="block text-sm text-gray-600 dark:text-gray-300">使用独立的 API 配置</span>
+                    <div className="w-20 shrink-0">
+                      <Select
+                        value={draft.agentApiConfigMode}
+                        onChange={(value) => updateAgentApiConfigMode(value as AgentApiConfigMode)}
+                        options={[
+                          { label: '关闭', value: 'off' },
+                          { label: '原生', value: 'native' },
+                          { label: '混合', value: 'hybrid' },
+                        ]}
+                        className="w-full px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] hover:bg-white dark:hover:bg-white/[0.06] text-xs transition-all duration-200 shadow-sm text-gray-700 dark:text-gray-200 outline-none"
+                      />
+                    </div>
+                  </div>
+                  <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500 space-y-1">
+                    <div>原生：使用原生的 Responses API 配置，由模型调用 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] dark:bg-white/[0.06]">image_generation</code> 工具生成图片。</div>
+                    <div>混合：使用非原生的混合 API 配置，由文本模型调用自定义工具，请求图像模型生成图像，解决部分服务商/模型不支持 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[10px] dark:bg-white/[0.06]">image_generation</code> 工具的问题。</div>
+                  </div>
+                </div>
+
+                {draft.agentApiConfigMode !== 'off' && (
+                  <>
+                    <div className="block">
+                      <div className="mb-1 flex items-center justify-between gap-3">
+                        <span className="block text-sm text-gray-600 dark:text-gray-300">文本模型 API 配置</span>
+                        <div className="w-40 shrink-0">
+                          {agentTextProfileOptions.length > 0 ? (
+                            <Select
+                              value={selectedAgentTextProfile?.id ?? ''}
+                              onChange={(value) => commitSettings({ ...draft, agentTextProfileId: String(value) })}
+                              options={agentTextProfileOptions}
+                              className="w-full px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] hover:bg-white dark:hover:bg-white/[0.06] text-xs transition-all duration-200 shadow-sm text-gray-700 dark:text-gray-200 outline-none"
+                            />
+                          ) : (
+                            <div className="rounded-xl border border-yellow-200/70 bg-yellow-50 px-3 py-1.5 text-center text-xs text-yellow-700 dark:border-yellow-500/20 dark:bg-yellow-500/10 dark:text-yellow-300">
+                              没有可用配置
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                        用于对话和调用工具，仅支持 Responses API 配置。
+                      </div>
+                    </div>
+
+                    {draft.agentApiConfigMode === 'hybrid' && (
+                      <div className="block">
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <span className="block text-sm text-gray-600 dark:text-gray-300">图像模型 API 配置</span>
+                          <div className="w-40 shrink-0">
+                            <Select
+                              value={selectedAgentImageProfile?.id ?? ''}
+                              onChange={(value) => commitSettings({ ...draft, agentImageProfileId: String(value) })}
+                              options={agentImageProfileOptions}
+                              className="w-full px-3 py-1.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white/50 dark:bg-white/[0.03] hover:bg-white dark:hover:bg-white/[0.06] text-xs transition-all duration-200 shadow-sm text-gray-700 dark:text-gray-200 outline-none"
+                            />
+                          </div>
+                        </div>
+                        <div data-selectable-text className="text-xs text-gray-500 dark:text-gray-500">
+                          用于生成图像，支持所有类型的 API 配置。
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
                 <label className="block">
                   <span className="mb-1.5 block text-sm text-gray-600 dark:text-gray-300">最大工具调用轮数</span>
                   <input

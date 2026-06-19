@@ -61,11 +61,18 @@ function createAgentInstructions(settings: AppSettings) {
   const maxToolRounds = Number.isFinite(settings.agentMaxToolRounds)
     ? Math.max(1, Math.trunc(settings.agentMaxToolRounds))
     : DEFAULT_AGENT_MAX_TOOL_ROUNDS
+  const imageToolInstruction = settings.agentApiConfigMode === 'hybrid'
+    ? 'Use generate_image for single-image requests and generate_image_batch for concurrent multi-image requests. The built-in image_generation tool is not available in this session.'
+    : 'Use image_generation for single-image requests and generate_image_batch for concurrent multi-image requests.'
+  const imageInstructions = settings.agentApiConfigMode === 'hybrid'
+    ? AGENT_IMAGE_INSTRUCTIONS.replace(/image_generation/g, 'generate_image')
+    : AGENT_IMAGE_INSTRUCTIONS
   const instructions = [
-    AGENT_IMAGE_INSTRUCTIONS,
+    imageInstructions,
     '',
     '## Tool policy',
     `- Current maximum tool-use rounds for this Agent turn: ${maxToolRounds}.`,
+    `- ${imageToolInstruction}`,
     '- Call continue_generation ONLY when you have generated a prerequisite image and need another round to generate dependent images. Do NOT call it when the task is complete.',
     '- When web_search is available, use it only when current external information would improve the answer or the user asks for research/news/facts.',
     '- When the requested task is complete, stop calling tools and provide the final response.',
@@ -121,8 +128,41 @@ function createImageTool(params: TaskParams, profile: ApiProfile, maskDataUrl?: 
   return tool
 }
 
+function createGenerateImageFunctionTool() {
+  return {
+    type: 'function',
+    name: 'generate_image',
+    description: [
+      'Generate one image through the app image API. Use this for single-image requests or prerequisite/base images that later images must reference.',
+      'The prompt must be self-contained and include full visual style descriptions.',
+      'If it refers to an existing image, include the corresponding XML tag, e.g. <ref id="round-1-image-1" />, inside the prompt so the app can attach the reference image automatically.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Short stable identifier for this image, e.g. "cover", "base_character", "scene_1".',
+        },
+        prompt: {
+          type: 'string',
+          description: 'Complete image generation prompt with all visual details. Include matching XML ref tags when referring to existing images.',
+        },
+      },
+      required: ['id', 'prompt'],
+      additionalProperties: false,
+    },
+    strict: true,
+  }
+}
+
 function createAgentTools(params: TaskParams, profile: ApiProfile, settings: AppSettings, maskDataUrl?: string): Array<Record<string, unknown>> {
-  const tools: Array<Record<string, unknown>> = [createImageTool(params, profile, maskDataUrl)]
+  const tools: Array<Record<string, unknown>> = settings.agentApiConfigMode === 'hybrid'
+    ? [createGenerateImageFunctionTool()]
+    : [createImageTool(params, profile, maskDataUrl)]
+  const singleImageToolInstruction = settings.agentApiConfigMode === 'hybrid'
+    ? 'For single images or prerequisite/base images, use the generate_image tool instead.'
+    : 'For single images or prerequisite/base images, use the built-in image_generation tool instead.'
 
   // generate_image_batch: custom function tool for concurrent multi-image generation
   tools.push({
@@ -132,7 +172,7 @@ function createAgentTools(params: TaskParams, profile: ApiProfile, settings: App
       'Generate multiple images concurrently. Use this ONLY when:',
       '1. There are 2+ remaining images whose prerequisites (base references) are ALL already generated.',
       '2. These images are independent of each other (none references another image in this same batch).',
-      'For single images or prerequisite/base images, use the built-in image_generation tool instead.',
+      singleImageToolInstruction,
       'Each image prompt must be self-contained and include full visual style descriptions.',
       'If an image needs to match a previously generated image, include the corresponding XML tag (e.g. <ref id="round-1-image-1" />) inside that image prompt so the app can attach the reference image automatically.',
     ].join(' '),

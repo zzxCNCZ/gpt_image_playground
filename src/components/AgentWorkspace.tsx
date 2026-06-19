@@ -170,8 +170,13 @@ function markToolStatusStopped(status: AgentWebSearchStatus): AgentWebSearchStat
 }
 
 function getImageTaskForOutputItem(item: ResponsesOutputItem, tasksForRound: TaskRecord[]) {
-  if (item.type !== 'image_generation_call') return null
-  return tasksForRound.find((task) => task.agentToolCallId && task.agentToolCallId === item.id) ?? null
+  if (item.type === 'image_generation_call') {
+    return tasksForRound.find((task) => task.agentToolCallId && task.agentToolCallId === item.id) ?? null
+  }
+  if (item.type === 'function_call' && item.name === 'generate_image' && item.call_id) {
+    return tasksForRound.find((task) => task.agentToolCallId === item.call_id) ?? null
+  }
+  return null
 }
 
 function getBatchImageTasksForOutputItem(item: ResponsesOutputItem, tasksForRound: TaskRecord[]) {
