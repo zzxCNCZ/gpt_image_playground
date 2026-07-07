@@ -1,12 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
-    "deploymentEnabled": true
+    "deploymentEnabled": false
   },
   "rewrites": [
     {
       "source": "/api-proxy/:path*",
-      "destination": "/https://api-bwg.cubence.com/v1/:path*"
+      "destination": "https://code.newcli.com/codex/v1/:path*"
     }
   ]
 }
