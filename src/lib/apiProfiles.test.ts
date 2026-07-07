@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_FAL_BASE_URL,
   DEFAULT_FAL_MODEL,
@@ -7,13 +7,77 @@ import {
   DEFAULT_SETTINGS,
   createDefaultOpenAIProfile,
   createDefaultFalProfile,
+  getActiveApiProfile,
   findEquivalentApiProfile,
   importCustomProviderDefinitionFromJson,
   importCustomProviderSettingsFromJson,
   mergeImportedSettings,
   normalizeSettings,
   switchApiProfileProvider,
+  validateApiProfile,
 } from './apiProfiles'
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
+describe('validateApiProfile', () => {
+  it('allows empty API URL when API proxy is enabled and available', () => {
+    vi.stubEnv('VITE_API_PROXY_AVAILABLE', 'true')
+
+    expect(validateApiProfile(createDefaultOpenAIProfile({
+      baseUrl: '',
+      apiKey: 'test-key',
+      apiProxy: true,
+    }))).toBeNull()
+  })
+
+  it('still requires API URL when API proxy is unavailable', () => {
+    expect(validateApiProfile(createDefaultOpenAIProfile({
+      baseUrl: '',
+      apiKey: 'test-key',
+      apiProxy: true,
+    }))).toBe('缺少 API URL')
+  })
+})
+
+describe('default API URL env', () => {
+  it('applies shared URL params from VITE_DEFAULT_API_URL to the default profile', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_DEFAULT_API_URL', 'https://app.example.com/?apiUrl=https%3A%2F%2Fapi.example.com&apiMode=images&model=test-image-model&profileName=URL%20Profile&codexCli=true&streamImages=true&streamPartialImages=3')
+
+    const { DEFAULT_SETTINGS, createDefaultOpenAIProfile } = await import('./apiProfiles')
+
+    expect(createDefaultOpenAIProfile()).toMatchObject({
+      name: 'URL Profile',
+      baseUrl: 'https://api.example.com',
+      model: 'test-image-model',
+      apiMode: 'images',
+      codexCli: true,
+      streamImages: true,
+      streamPartialImages: 3,
+    })
+    expect(DEFAULT_SETTINGS.profiles[0]).toMatchObject({
+      name: 'URL Profile',
+      baseUrl: 'https://api.example.com',
+      model: 'test-image-model',
+      apiMode: 'images',
+      codexCli: true,
+      streamImages: true,
+      streamPartialImages: 3,
+    })
+  })
+
+  it('keeps settings URLs out of the default API base URL', async () => {
+    vi.resetModules()
+    vi.stubEnv('VITE_DEFAULT_API_URL', 'https://example.com/?settings={}')
+
+    const { DEFAULT_SETTINGS } = await import('./apiProfiles')
+
+    expect(DEFAULT_SETTINGS.baseUrl).toBe('')
+    expect(DEFAULT_SETTINGS.profiles[0].baseUrl).toBe('')
+  })
+})
 
 describe('mergeImportedSettings', () => {
   it('replaces the default OpenAI profile with legacy imported settings when current settings are untouched', () => {
@@ -527,6 +591,119 @@ describe('custom providers', () => {
     expect(profile.provider).toBe(provider.id)
     expect(profile.baseUrl).toBe(DEFAULT_SETTINGS.baseUrl)
     expect(profile.model).toBe(DEFAULT_IMAGES_MODEL)
+  })
+
+  it('uses API-mode specific streaming defaults and preserves partial image count', () => {
+    expect(createDefaultOpenAIProfile().streamImages).toBe(false)
+    expect(createDefaultOpenAIProfile({ apiMode: 'responses' }).streamImages).toBe(true)
+    expect(createDefaultOpenAIProfile().streamPartialImages).toBe(1)
+    expect(DEFAULT_SETTINGS.streamImages).toBe(false)
+    expect(DEFAULT_SETTINGS.streamPartialImages).toBe(1)
+    expect(DEFAULT_SETTINGS.profiles[0].streamImages).toBe(false)
+    expect(DEFAULT_SETTINGS.profiles[0].streamPartialImages).toBe(1)
+    expect(normalizeSettings({ apiMode: 'responses' }).streamImages).toBe(true)
+
+    const normalized = normalizeSettings({
+      profiles: [
+        createDefaultOpenAIProfile({ streamImages: false, streamPartialImages: 3 }),
+      ],
+    })
+
+    expect(normalized.streamImages).toBe(false)
+    expect(normalized.streamPartialImages).toBe(3)
+    expect(normalized.profiles[0].streamImages).toBe(false)
+    expect(normalized.profiles[0].streamPartialImages).toBe(3)
+
+    const clamped = normalizeSettings({
+      profiles: [
+        createDefaultOpenAIProfile({ streamPartialImages: 8 }),
+      ],
+    })
+
+    expect(clamped.profiles[0].streamPartialImages).toBe(3)
+  })
+
+  it('normalizes custom providers to Images API mode', () => {
+    const settings = normalizeSettings({
+      customProviders: [{ id: 'custom-json', name: 'Custom JSON', submit: { path: 'images/generations' } }],
+      profiles: [{
+        id: 'custom-profile',
+        name: 'Custom Profile',
+        provider: 'custom-json',
+        baseUrl: 'https://custom.example.com/v1',
+        apiKey: 'custom-key',
+        model: 'custom-model',
+        apiMode: 'responses',
+        streamImages: true,
+      }],
+    })
+
+    expect(settings.profiles[0]).toMatchObject({
+      provider: 'custom-json',
+      apiMode: 'images',
+      streamImages: false,
+    })
+  })
+
+  it('keeps provider order usable when custom providers are added after manual sorting', () => {
+    const settings = normalizeSettings({
+      providerOrder: ['fal', 'openai'],
+      customProviders: [
+        { id: 'custom-alpha', name: '示例服务商 A', submit: { path: 'images/generations' } },
+        { id: 'custom-beta', name: '示例服务商 B', submit: { path: 'images/generations' } },
+      ],
+    })
+
+    expect(settings.providerOrder).toEqual(['fal', 'openai', 'custom-alpha', 'custom-beta'])
+  })
+
+  it('keeps active custom providers in Images API mode when legacy apiMode is responses', () => {
+    const settings = normalizeSettings({
+      apiMode: 'responses',
+      customProviders: [{ id: 'custom-json', name: 'Custom JSON', submit: { path: 'images/generations' } }],
+      activeProfileId: 'custom-profile',
+      profiles: [{
+        id: 'custom-profile',
+        name: 'Custom Profile',
+        provider: 'custom-json',
+        baseUrl: 'https://custom.example.com/v1',
+        apiKey: 'custom-key',
+        model: 'custom-model',
+      }],
+    })
+
+    const activeProfile = getActiveApiProfile({ ...settings, apiMode: 'responses', streamImages: true })
+    expect(activeProfile.apiMode).toBe('images')
+    expect(activeProfile.streamImages).toBe(false)
+  })
+
+  it('keeps non-OpenAI providers in Images API mode when switching providers', () => {
+    const provider = { id: 'custom-json', name: 'Custom JSON', submit: { path: 'images/generations' } }
+    const openaiProfile = createDefaultOpenAIProfile({ apiMode: 'responses', streamImages: true })
+
+    const falProfile = switchApiProfileProvider(openaiProfile, 'fal')
+    const customProfile = switchApiProfileProvider(openaiProfile, provider.id, provider)
+
+    expect(falProfile).toMatchObject({ provider: 'fal', apiMode: 'images', streamImages: false })
+    expect(customProfile).toMatchObject({ provider: provider.id, apiMode: 'images', streamImages: false })
+  })
+
+  it('enables Agent submit auto scroll by default', () => {
+    expect(DEFAULT_SETTINGS.agentScrollToBottomAfterSubmit).toBe(true)
+    expect(normalizeSettings({}).agentScrollToBottomAfterSubmit).toBe(true)
+    expect(normalizeSettings({ agentScrollToBottomAfterSubmit: false }).agentScrollToBottomAfterSubmit).toBe(false)
+  })
+
+  it('enables Agent math formatting prompt by default', () => {
+    expect(DEFAULT_SETTINGS.agentMathFormattingPrompt).toBe(true)
+    expect(normalizeSettings({}).agentMathFormattingPrompt).toBe(true)
+    expect(normalizeSettings({ agentMathFormattingPrompt: false }).agentMathFormattingPrompt).toBe(false)
+  })
+
+  it('disables prompt rewrite allowance by default', () => {
+    expect(DEFAULT_SETTINGS.allowPromptRewrite).toBe(false)
+    expect(normalizeSettings({}).allowPromptRewrite).toBe(false)
+    expect(normalizeSettings({ allowPromptRewrite: true }).allowPromptRewrite).toBe(true)
   })
 
   it('restores OpenAI-compatible URL after switching through fal.ai', () => {
