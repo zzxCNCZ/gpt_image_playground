@@ -52,7 +52,7 @@ import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
-import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteCachedThumbnail, deleteImageCacheEntry, ensureImageCached, scheduleThumbnailBackfill } from './lib/imageCache'
+import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteImageCacheEntry, ensureImageCached, scheduleThumbnailBackfill } from './lib/imageCache'
 import { hasActiveDataOperations } from './lib/dataOperations'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, createExportBlob, getExportImageEstimatedBytes, getExportZipPlan, MAX_EXPORT_ZIP_BYTES, readExportZip, readExportZipFileAsDataUrl, readExportZipManifest } from './lib/exportZip'
@@ -71,6 +71,7 @@ const customRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const openAIWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const agentRoundControllers = new Map<string, AbortController>()
 const agentRecoveryContinuations = new Set<string>()
+const deletedActiveAgentTasks = new Map<string, { task: TaskRecord; controller: AbortController }>()
 let agentConversationPersistenceReady = false
 let agentConversationMigrationPending = false
 const OPENAI_INTERRUPTED_ERROR = '请求中断'
@@ -1215,6 +1216,7 @@ export const useStore = create<AppState>()(
       streamPreviewSlots: {},
       setTaskStreamPreview: (taskId, image, requestIndex = 0) => set((s) => {
         if (image) {
+          if (!s.tasks.some((task) => task.id === taskId)) return s
           const slotKey = String(requestIndex)
           const currentSlots = s.streamPreviewSlots[taskId] ?? {}
           if (s.streamPreviews[taskId] === image && currentSlots[slotKey] === image) return s
@@ -2182,6 +2184,12 @@ function getAgentRoundControllerKey(conversationId: string, roundId: string) {
   return `${conversationId}:${roundId}`
 }
 
+function getDeletedActiveAgentTasks(conversationId: string, roundId: string, controller: AbortController) {
+  return Array.from(deletedActiveAgentTasks.values())
+    .filter((entry) => entry.controller === controller && entry.task.agentConversationId === conversationId && entry.task.agentRoundId === roundId)
+    .map((entry) => entry.task)
+}
+
 function createAgentAbortError() {
   return new DOMException('Agent 请求已停止', 'AbortError')
 }
@@ -2465,8 +2473,7 @@ async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
   for (const imgId of candidates) {
     if (stillUsed.has(imgId)) continue
     await deleteImage(imgId)
-    deleteCachedImage(imgId)
-    deleteCachedThumbnail(imgId)
+    deleteImageCacheEntry(imgId)
   }
 }
 
@@ -2673,7 +2680,7 @@ function scrubTaskRawResponsePayloadForDeletedTasks(task: TaskRecord, conversati
     .find((item) => item.id === task.agentRoundId)
   if (!round) return task
 
-  const roundDeletedTasks = deletedTasks.filter((item) => round.outputTaskIds.includes(item.id))
+  const roundDeletedTasks = deletedTasks.filter((item) => item.agentRoundId === round.id)
   if (roundDeletedTasks.length === 0) return task
 
   try {
@@ -2687,19 +2694,25 @@ function scrubTaskRawResponsePayloadForDeletedTasks(task: TaskRecord, conversati
   }
 }
 
-async function scrubAgentOutputPayloadsForDeletedTasks(deletedTasks: TaskRecord[], remainingTasks: TaskRecord[]) {
-  if (deletedTasks.length === 0) return remainingTasks
+async function scrubAgentOutputPayloadsForDeletedTasks(deletedTasks: TaskRecord[]) {
+  if (deletedTasks.length === 0) return
 
-  const conversations = scrubAgentConversationsForDeletedTasks(useStore.getState().agentConversations, deletedTasks)
-  const scrubbedTasks = remainingTasks.map((task) => scrubTaskRawResponsePayloadForDeletedTasks(task, conversations, deletedTasks))
-  useStore.setState({ agentConversations: conversations })
+  const updatedTaskIds = new Set<string>()
+  useStore.setState((state) => {
+    const agentConversations = scrubAgentConversationsForDeletedTasks(state.agentConversations, deletedTasks)
+    const tasks = state.tasks.map((task) => {
+      const scrubbed = scrubTaskRawResponsePayloadForDeletedTasks(task, agentConversations, deletedTasks)
+      if (scrubbed.rawResponsePayload === task.rawResponsePayload) return task
+      updatedTaskIds.add(task.id)
+      return { ...task, rawResponsePayload: scrubbed.rawResponsePayload }
+    })
+    return { agentConversations, tasks }
+  })
 
-  for (const task of scrubbedTasks) {
-    const previous = remainingTasks.find((item) => item.id === task.id)
-    if (previous?.rawResponsePayload !== task.rawResponsePayload) await putTask(task)
+  for (const taskId of updatedTaskIds) {
+    const task = useStore.getState().tasks.find((item) => item.id === taskId)
+    if (task) await putTask(task)
   }
-
-  return scrubbedTasks
 }
 
 function sanitizeResponseOutputForInput(output: ResponsesOutputItem[], options: { allowPendingFunctionCalls?: boolean } = {}) {
@@ -3439,13 +3452,18 @@ async function executeAgentRound(
 
       const stored = await storeImageWithSize(image.dataUrl, 'generated')
       cacheImage(stored.id, image.dataUrl)
+      const latestBeforeUpdate = useStore.getState().tasks.find((task) => task.id === taskId)
+      if (!latestBeforeUpdate) {
+        await deleteUnreferencedImageIds([stored.id])
+        return taskId
+      }
       const actualParams: Partial<TaskParams> = {
         ...(Object.keys(image.actualParams ?? {}).length ? image.actualParams : {}),
         ...(!hasActualSizeParam(image.actualParams) ? getImageSizeParam(stored) ?? {} : {}),
         n: 1,
       }
       updateTaskInStore(taskId, {
-        prompt: image.revisedPrompt ?? latestTask?.prompt ?? '',
+        prompt: image.revisedPrompt ?? latestBeforeUpdate.prompt,
         outputImages: [stored.id],
         actualParams,
         actualParamsByImage: { [stored.id]: actualParams },
@@ -3454,7 +3472,7 @@ async function executeAgentRound(
         status: 'done',
         error: null,
         finishedAt: Date.now(),
-        elapsed: Date.now() - (latestTask?.createdAt ?? startedAt),
+        elapsed: Date.now() - latestBeforeUpdate.createdAt,
         agentToolAction: image.action,
       })
       useStore.getState().setTaskStreamPreview(taskId)
@@ -4104,8 +4122,16 @@ async function executeAgentRound(
       (task) => Boolean(task.agentToolCallId && !task.agentBatchCallId),
     )
 
-    const taskIds: string[] = [...streamingTaskIds]
-    const outputIds = taskIds.flatMap((taskId) => useStore.getState().tasks.find((task) => task.id === taskId)?.outputImages ?? [])
+    const latestTasks = useStore.getState().tasks
+    const existingTaskIds = new Set(latestTasks.map((task) => task.id))
+    const taskIds = streamingTaskIds.filter((taskId) => existingTaskIds.has(taskId))
+    const outputIds = taskIds.flatMap((taskId) => latestTasks.find((task) => task.id === taskId)?.outputImages ?? [])
+    const latestConversation = useStore.getState().agentConversations.find((item) => item.id === conversationId)
+    const latestRound = latestConversation?.rounds.find((item) => item.id === roundId)
+    const deletedTasks = getDeletedActiveAgentTasks(conversationId, roundId, controller)
+    const responseOutput = latestRound
+      ? scrubResponseOutputForDeletedAgentTasks(latestRound, accumulatedOutputItems, deletedTasks)
+      : accumulatedOutputItems
     const limitNotice = reachedToolLimit ? `已达到最大工具调用次数（${maxToolCalls}），已停止自动续跑。` : ''
     const joinedText = textSegments.join('\n\n').trim()
     const finalContent = [joinedText, limitNotice]
@@ -4132,7 +4158,7 @@ async function executeAgentRound(
               assistantMessageId,
               outputTaskIds: taskIds,
               responseId: lastResponseId,
-              responseOutput: accumulatedOutputItems,
+              responseOutput,
               status: 'done',
               error: null,
               finishedAt: Date.now(),
@@ -4208,6 +4234,16 @@ async function executeAgentRound(
   } finally {
     if (agentRoundControllers.get(controllerKey) === controller) {
       agentRoundControllers.delete(controllerKey)
+    }
+    const deletedTasks = getDeletedActiveAgentTasks(conversationId, roundId, controller)
+    try {
+      await scrubAgentOutputPayloadsForDeletedTasks(deletedTasks)
+    } catch (err) {
+      console.warn('清理已删除 Agent 任务的响应失败', err)
+    } finally {
+      for (const task of deletedTasks) {
+        if (deletedActiveAgentTasks.get(task.id)?.controller === controller) deletedActiveAgentTasks.delete(task.id)
+      }
     }
   }
 }
@@ -4338,6 +4374,7 @@ async function executeTask(taskId: string) {
     const latestBeforeUpdate = useStore.getState().tasks.find((t) => t.id === taskId)
     if (!latestBeforeUpdate || latestBeforeUpdate.status !== 'running') {
       useStore.getState().setTaskStreamPreview(taskId)
+      await deleteUnreferencedImageIds([...outputIds, ...(transparentOriginalImageIds ?? [])])
       return
     }
     const partialImageIdsToClean = latestBeforeUpdate.streamPartialImageIds || []
@@ -4748,54 +4785,51 @@ export async function editOutputs(task: TaskRecord) {
   showToast(`已添加 ${added} 张输出图到输入`, 'success')
 }
 
+async function removeTasks(taskIds: string[]) {
+  const toDelete = new Set(taskIds)
+  let deletedTasks: TaskRecord[] = []
+  useStore.setState((state) => {
+    deletedTasks = state.tasks.filter((task) => toDelete.has(task.id))
+    const streamPreviews = { ...state.streamPreviews }
+    const streamPreviewSlots = { ...state.streamPreviewSlots }
+    for (const taskId of toDelete) {
+      delete streamPreviews[taskId]
+      delete streamPreviewSlots[taskId]
+    }
+    return {
+      tasks: state.tasks.filter((task) => !toDelete.has(task.id)),
+      selectedTaskIds: state.selectedTaskIds.filter((id) => !toDelete.has(id)),
+      streamPreviews,
+      streamPreviewSlots,
+    }
+  })
+  if (deletedTasks.length === 0) return 0
+
+  const deletedImageIds = new Set<string>()
+  for (const task of deletedTasks) {
+    addTaskReferencedImageIds(deletedImageIds, task)
+    const controller = task.agentConversationId && task.agentRoundId
+      ? agentRoundControllers.get(getAgentRoundControllerKey(task.agentConversationId, task.agentRoundId))
+      : undefined
+    if (controller) deletedActiveAgentTasks.set(task.id, { task, controller })
+    clearFalRecoveryTimer(task.id)
+    clearCustomRecoveryTimer(task.id)
+    clearOpenAIWatchdogTimer(task.id)
+  }
+
+  await scrubAgentOutputPayloadsForDeletedTasks(deletedTasks)
+  for (const task of deletedTasks) await dbDeleteTask(task.id)
+  await deleteUnreferencedImageIds(deletedImageIds)
+  return deletedTasks.length
+}
+
 /** 删除多条任务 */
 export async function removeMultipleTasks(taskIds: string[]) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast, selectedTaskIds } = useStore.getState()
-  
   if (!taskIds.length) return
 
-  const toDelete = new Set(taskIds)
-  const deletedTasks = tasks.filter(t => toDelete.has(t.id))
-  const remaining = await scrubAgentOutputPayloadsForDeletedTasks(deletedTasks, tasks.filter(t => !toDelete.has(t.id)))
-
-  // 收集所有被删除任务的关联图片
-  const deletedImageIds = new Set<string>()
-  for (const t of tasks) {
-    if (toDelete.has(t.id)) {
-      addTaskReferencedImageIds(deletedImageIds, t)
-    }
-  }
-
-  setTasks(remaining)
-  for (const id of taskIds) {
-    await dbDeleteTask(id)
-  }
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    addTaskReferencedImageIds(stillUsed, t)
-  }
-  addAgentReferencedImageIds(stillUsed)
-  addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of deletedImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      deleteCachedImage(imgId)
-      deleteCachedThumbnail(imgId)
-    }
-  }
-
-  // 如果删除的任务在选中列表中，则移除
-  const newSelection = selectedTaskIds.filter(id => !toDelete.has(id))
-  if (newSelection.length !== selectedTaskIds.length) {
-    useStore.getState().setSelectedTaskIds(newSelection)
-  }
-
-  showToast(`已删除 ${taskIds.length} 个任务`, 'success')
+  const deletedCount = await removeTasks(taskIds)
+  if (deletedCount === 0) return
+  useStore.getState().showToast(`已删除 ${deletedCount} 个任务`, 'success')
 }
 
 /** 删除所有失败任务 */
@@ -4826,41 +4860,9 @@ export async function clearFailedTasks(taskIds?: string[]) {
 
 /** 删除单条任务 */
 export async function removeTask(task: TaskRecord) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast } = useStore.getState()
-
-  // 收集此任务关联的图片
-  const taskImageIds = new Set([
-    ...(task.inputImageIds || []),
-    ...(task.maskImageId ? [task.maskImageId] : []),
-    ...(task.outputImages || []),
-    ...(task.transparentOriginalImages || []),
-    ...(task.streamPartialImageIds || []),
-  ])
-
-  // 从列表移除
-  const remaining = await scrubAgentOutputPayloadsForDeletedTasks([task], tasks.filter((t) => t.id !== task.id))
-  setTasks(remaining)
-  await dbDeleteTask(task.id)
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    addTaskReferencedImageIds(stillUsed, t)
-  }
-  addAgentReferencedImageIds(stillUsed)
-  addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of taskImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      deleteCachedImage(imgId)
-      deleteCachedThumbnail(imgId)
-    }
-  }
-
-  showToast('任务已删除', 'success')
+  const deletedCount = await removeTasks([task.id])
+  if (deletedCount === 0) return
+  useStore.getState().showToast('任务已删除', 'success')
 }
 
 /** 清空数据选项 */
