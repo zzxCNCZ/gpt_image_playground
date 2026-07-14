@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { strToU8, zipSync } from 'fflate'
 import { DEFAULT_PARAMS } from './types'
 import { createDefaultFalProfile, createDefaultOpenAIProfile, DEFAULT_RESPONSES_MODEL, DEFAULT_SETTINGS, normalizeSettings } from './lib/apiProfiles'
@@ -134,6 +134,10 @@ import { callAgentResponsesApi, callBatchImageSingle } from './lib/agentApi'
 import { getFalQueuedImageResult } from './lib/falAiImageApi'
 import { removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { cleanStaleAgentInputDrafts, clearFailedTasks, deleteFavoriteCollection, editOutputs, getErrorToastMessage, getPersistedState, getTaskApiProfile, importData, initStore, markInterruptedOpenAIRunningTasks, migratePersistedState, regenerateAgentAssistantMessage, removeMultipleTasks, removeTask, reuseConfig, stopAgentResponse, submitAgentMessage, submitTask, taskMatchesFilterStatus, taskMatchesSearchQuery, useStore } from './store'
+
+const commitTaskDeletionImplementation = vi.mocked(commitTaskDeletion).getMockImplementation()!
+const deleteDbImageImplementation = vi.mocked(deleteDbImage).getMockImplementation()!
+const callBatchImageSingleImplementation = vi.mocked(callBatchImageSingle).getMockImplementation()!
 
 const imageA = { id: 'image-a', dataUrl: 'data:image/png;base64,a' }
 const imageB = { id: 'image-b', dataUrl: 'data:image/png;base64,b' }
@@ -271,6 +275,8 @@ describe('favorite collection deletion', () => {
 
 describe('mask draft lifecycle in store actions', () => {
   beforeEach(() => {
+    vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    vi.mocked(removeKeyedBackgroundFromDataUrl).mockReset().mockImplementation(async (dataUrl) => `transparent:${dataUrl}`)
     useStore.setState({
       settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
       prompt: 'prompt',
@@ -323,6 +329,7 @@ describe('mask draft lifecycle in store actions', () => {
 
   it('shows a submitted toast after creating a gallery task', async () => {
     await submitTask()
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     const state = useStore.getState()
     expect(state.tasks).toHaveLength(1)
@@ -344,7 +351,7 @@ describe('mask draft lifecycle in store actions', () => {
     })
 
     await submitTask()
-    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     const [task] = useStore.getState().tasks
     expect(task.actualParams).toMatchObject({ size: '1254x1254', output_format: 'png', n: 1 })
@@ -368,7 +375,7 @@ describe('mask draft lifecycle in store actions', () => {
     })
 
     await submitTask()
-    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     const [task] = useStore.getState().tasks
     expect(task.actualParams?.size).toBe('1024x1024')
@@ -398,9 +405,7 @@ describe('mask draft lifecycle in store actions', () => {
     })
 
     await submitTask()
-    for (let i = 0; i < 5; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
       prompt: 'transparent:单主体贴纸素材',
@@ -450,9 +455,7 @@ describe('mask draft lifecycle in store actions', () => {
     })
 
     await submitTask()
-    for (let i = 0; i < 5; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     const [task] = useStore.getState().tasks
     expect(task).toMatchObject({
@@ -493,9 +496,7 @@ describe('mask draft lifecycle in store actions', () => {
     })
 
     await submitTask()
-    for (let i = 0; i < 5; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('done'))
 
     expect(callImageApi).toHaveBeenCalledWith(expect.objectContaining({
       params: expect.objectContaining({
@@ -755,9 +756,9 @@ describe('fal task recovery', () => {
     await clearTasks()
     await clearImages()
     await clearAgentConversations()
-    vi.mocked(getFalQueuedImageResult).mockClear()
-    vi.mocked(callAgentResponsesApi).mockClear()
-    vi.mocked(removeKeyedBackgroundFromDataUrl).mockClear()
+    vi.mocked(getFalQueuedImageResult).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    vi.mocked(callAgentResponsesApi).mockReset().mockResolvedValue({ text: '', images: [], outputItems: [], responseId: 'response-default' })
+    vi.mocked(removeKeyedBackgroundFromDataUrl).mockReset().mockImplementation(async (dataUrl) => `transparent:${dataUrl}`)
     const falProfile = createDefaultFalProfile({ id: 'fal-profile', apiKey: 'fal-key' })
     useStore.setState({
       settings: normalizeSettings({
@@ -804,9 +805,9 @@ describe('fal task recovery', () => {
     })
 
     await initStore()
-    for (let i = 0; i < 5; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => {
+      expect(useStore.getState().tasks.find((item) => item.id === falTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
+    })
 
     expect(removeKeyedBackgroundFromDataUrl).toHaveBeenCalledWith('data:image/png;base64,fal-recovered')
     const recovered = useStore.getState().tasks.find((item) => item.id === falTask.id)
@@ -898,9 +899,7 @@ describe('fal task recovery', () => {
     await putAgentConversation(conversation)
 
     await initStore()
-    for (let i = 0; i < 20 && useStore.getState().agentConversations[0]?.rounds[0]?.status !== 'done'; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]?.status).toBe('done'))
 
     const recoveredTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
     expect(recoveredTask).toMatchObject({ status: 'done', falRecoverable: false })
@@ -980,9 +979,9 @@ describe('fal task recovery', () => {
     await putAgentConversation(conversation)
 
     await initStore()
-    for (let i = 0; i < 20 && useStore.getState().tasks.find((item) => item.id === agentTask.id)?.falRecoverable !== false; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => {
+      expect(useStore.getState().agentConversations[0]?.rounds[0]).toMatchObject({ status: 'error', error: 'quota exceeded' })
+    })
 
     expect(callAgentResponsesApi).not.toHaveBeenCalled()
     const failedTask = useStore.getState().tasks.find((item) => item.id === agentTask.id)
@@ -1066,9 +1065,7 @@ describe('fal task recovery', () => {
     await putAgentConversation(conversation)
 
     await initStore()
-    for (let i = 0; i < 20 && useStore.getState().agentConversations[0]?.rounds[0]?.status !== 'done'; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(useStore.getState().agentConversations[0]?.rounds[0]?.status).toBe('done'))
 
     expect(callAgentResponsesApi).not.toHaveBeenCalled()
     const round = useStore.getState().agentConversations[0].rounds[0]
@@ -1146,9 +1143,9 @@ describe('fal task recovery', () => {
     await putAgentConversation(conversation)
 
     await initStore()
-    for (let i = 0; i < 20 && useStore.getState().tasks.find((item) => item.id === agentTask.id)?.falRecoverable !== false; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => {
+      expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
+    })
 
     expect(callAgentResponsesApi).not.toHaveBeenCalled()
     expect(useStore.getState().tasks.find((item) => item.id === agentTask.id)).toMatchObject({ status: 'done', falRecoverable: false })
@@ -1176,8 +1173,8 @@ describe('fal task recovery', () => {
       finishedAt: Date.now(),
       elapsed: 10,
     })
-    let resolveRecovery: (value: Awaited<ReturnType<typeof getFalQueuedImageResult>>) => void = () => {}
-    vi.mocked(getFalQueuedImageResult).mockImplementationOnce(() => new Promise((resolve) => { resolveRecovery = resolve }))
+    const recovery = deferred<Awaited<ReturnType<typeof getFalQueuedImageResult>>>()
+    vi.mocked(getFalQueuedImageResult).mockImplementationOnce(() => recovery.promise)
     const conversation = agentConversation({
       id: 'conversation-a',
       activeRoundId: 'round-a',
@@ -1210,24 +1207,23 @@ describe('fal task recovery', () => {
     await putAgentConversation(conversation)
 
     await initStore()
-    for (let i = 0; i < 20 && vi.mocked(getFalQueuedImageResult).mock.calls.length === 0; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(getFalQueuedImageResult).toHaveBeenCalledTimes(1))
     useStore.setState((state) => ({
       agentConversations: state.agentConversations.map((item) => item.id === 'conversation-a'
         ? { ...item, rounds: item.rounds.map((round) => round.id === 'round-a' ? { ...round, status: 'running', error: null } : round) }
         : item),
     }))
     stopAgentResponse('conversation-a')
-    resolveRecovery({
+    recovery.resolve({
       images: ['data:image/png;base64,should-not-write'],
       actualParams: {},
       actualParamsList: [{}],
       revisedPrompts: [],
     })
-    for (let i = 0; i < 5; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await recovery.promise
+    await vi.waitFor(() => {
+      expect(useStore.getState().tasks[0]).toMatchObject({ status: 'error', error: '已停止生成。', falRecoverable: false })
+    })
 
     expect(useStore.getState().tasks[0]).toMatchObject({
       status: 'error',
@@ -2029,8 +2025,7 @@ describe('agent context for removed outputs', () => {
       agentEditingRoundId: null,
       showToast: vi.fn(),
     })
-    vi.mocked(callAgentResponsesApi).mockClear()
-    vi.mocked(callAgentResponsesApi).mockResolvedValue({
+    vi.mocked(callAgentResponsesApi).mockReset().mockResolvedValue({
       text: 'ok',
       images: [],
       outputItems: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
@@ -2041,7 +2036,7 @@ describe('agent context for removed outputs', () => {
   it('does not send removed image_generation results back to the model', async () => {
     await putImage({ id: 'image-live', dataUrl: 'data:image/png;base64,live-base64' })
     await submitAgentMessage()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
 
     const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
     const serializedInput = JSON.stringify(input)
@@ -2091,7 +2086,7 @@ describe('agent context for removed outputs', () => {
     }))
 
     await submitAgentMessage()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
 
     const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
     const serializedInput = JSON.stringify(input)
@@ -2129,7 +2124,7 @@ describe('agent context for removed outputs', () => {
     }))
 
     await submitAgentMessage()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
 
     const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
     const serializedInput = JSON.stringify(input)
@@ -2170,7 +2165,7 @@ describe('agent context for removed outputs', () => {
     }))
 
     await submitAgentMessage()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
 
     const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
     const serializedInput = JSON.stringify(input)
@@ -2229,7 +2224,7 @@ describe('agent context for removed outputs', () => {
     }))
 
     await submitAgentMessage()
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await vi.waitFor(() => expect(callAgentResponsesApi).toHaveBeenCalledTimes(1))
 
     const input = vi.mocked(callAgentResponsesApi).mock.calls[0][0].input
     const serializedInput = JSON.stringify(input)
@@ -2408,6 +2403,12 @@ describe('agent context for removed outputs', () => {
 
     expect(useStore.getState().tasks.map((item) => item.id)).toEqual(['failed-after-confirm-open'])
   })
+
+  afterEach(async () => {
+    await vi.waitFor(() => {
+      expect(useStore.getState().agentConversations.flatMap((conversation) => conversation.rounds).every((round) => round.status !== 'running')).toBe(true)
+    })
+  })
 })
 
 describe('task deletion', () => {
@@ -2415,21 +2416,28 @@ describe('task deletion', () => {
     await clearTasks()
     await clearImages()
     await clearAgentConversations()
-    vi.mocked(callImageApi).mockClear()
-    vi.mocked(commitTaskDeletion).mockClear()
-    vi.mocked(deleteDbImage).mockClear()
-    vi.mocked(getFalQueuedImageResult).mockClear()
+    vi.mocked(callImageApi).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    vi.mocked(commitTaskDeletion).mockReset().mockImplementation(commitTaskDeletionImplementation)
+    vi.mocked(deleteDbImage).mockReset().mockImplementation(deleteDbImageImplementation)
+    vi.mocked(getFalQueuedImageResult).mockReset().mockResolvedValue({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    vi.mocked(removeKeyedBackgroundFromDataUrl).mockReset().mockImplementation(async (dataUrl) => `transparent:${dataUrl}`)
     useStore.setState({
       tasks: [],
       selectedTaskIds: [],
       inputImages: [],
+      maskDraft: null,
+      maskEditorImageId: null,
       galleryInputDraft: null,
       agentInputDrafts: {},
       agentConversations: [],
       streamPreviews: {},
       streamPreviewSlots: {},
       detailTaskId: null,
+      reusedTaskApiProfileId: null,
+      reusedTaskApiProfileName: null,
+      reusedTaskApiProfileMissing: false,
       showToast: vi.fn(),
+      setConfirmDialog: vi.fn(),
     })
   })
 
@@ -2809,6 +2817,9 @@ describe('task deletion', () => {
     const deletedB = task({ id: 'task-b', sourceMode: 'agent', agentConversationId: 'conversation-a', agentRoundId: 'round-a', agentToolCallId: 'call-b' })
     const existing = task({ id: 'task-existing', rawResponsePayload, sourceMode: 'agent', agentConversationId: 'conversation-a', agentRoundId: 'round-a' })
     const created = task({ id: 'task-created' })
+    await putDbTask(deletedA)
+    await putDbTask(deletedB)
+    await putDbTask(existing)
     useStore.setState({
       tasks: [deletedA, deletedB, existing],
       selectedTaskIds: [deletedA.id, deletedB.id],
@@ -2828,20 +2839,60 @@ describe('task deletion', () => {
         }],
       })],
     })
+    const firstCommitStarted = deferred<void>()
+    const releaseFirstCommit = deferred<void>()
+    let transactionQueue = Promise.resolve()
+    let commitCount = 0
+    vi.mocked(commitTaskDeletion).mockImplementation((...args) => {
+      const commitIndex = ++commitCount
+      const transaction = transactionQueue.then(async () => {
+        if (commitIndex === 1) {
+          firstCommitStarted.resolve()
+          await releaseFirstCommit.promise
+        }
+        await commitTaskDeletionImplementation(...args)
+        return undefined
+      })
+      transactionQueue = transaction.catch(() => {})
+      return transaction
+    })
 
     const deletionA = removeTask(deletedA)
-    const deletionB = removeTask(deletedB)
+    await firstCommitStarted.promise
     useStore.setState((state) => ({
       tasks: [created, ...state.tasks.map((item) => item.id === existing.id ? { ...item, prompt: 'updated' } : item)],
     }))
-    await Promise.all([deletionA, deletionB])
+    const createTask = putDbTask(created)
+    const updateTask = putDbTask({ ...existing, prompt: 'updated' })
+    const deletionB = removeTask(deletedB)
+    releaseFirstCommit.resolve()
+    await Promise.all([deletionA, deletionB, createTask, updateTask])
+    await transactionQueue
 
     const state = useStore.getState()
     expect(state.tasks.map((item) => item.id)).toEqual([created.id, existing.id])
     expect(state.tasks.find((item) => item.id === existing.id)?.prompt).toBe('updated')
-    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('base64-a')
-    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('base64-b')
+    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-a')
+    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-b')
+    expect(JSON.stringify(state.agentConversations)).not.toContain('call-a')
+    expect(JSON.stringify(state.agentConversations)).not.toContain('call-b')
     expect(state.selectedTaskIds).toEqual([])
+    expect(commitTaskDeletion).toHaveBeenCalledTimes(2)
+    const firstStoredUpdate = vi.mocked(commitTaskDeletion).mock.calls[0][1].find((item) => item.id === existing.id)
+    const secondStoredUpdate = vi.mocked(commitTaskDeletion).mock.calls[1][1].find((item) => item.id === existing.id)
+    expect(firstStoredUpdate?.rawResponsePayload).not.toContain('call-a')
+    expect(firstStoredUpdate?.rawResponsePayload).toContain('call-b')
+    expect(secondStoredUpdate?.prompt).toBe('updated')
+    expect(secondStoredUpdate?.rawResponsePayload).not.toContain('call-a')
+    expect(secondStoredUpdate?.rawResponsePayload).not.toContain('call-b')
+    const storedTasks = await getAllTasks()
+    expect(storedTasks.map((item) => item.id).sort()).toEqual([created.id, existing.id].sort())
+    expect(storedTasks.find((item) => item.id === existing.id)?.prompt).toBe('updated')
+    expect(storedTasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-a')
+    expect(storedTasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-b')
+    const storedConversations = await getAllAgentConversations()
+    expect(JSON.stringify(storedConversations)).not.toContain('call-a')
+    expect(JSON.stringify(storedConversations)).not.toContain('call-b')
   })
 
   it('counts duplicate and missing ids only when they match an existing task', async () => {
@@ -2873,16 +2924,14 @@ describe('task deletion', () => {
 
   it('removes gallery output images stored while the task is being deleted', async () => {
     const { callImageApi } = await import('./lib/api')
-    let resolvePostProcess: (dataUrl: string) => void = () => {}
+    const postProcess = deferred<string>()
     vi.mocked(callImageApi).mockResolvedValueOnce({
       images: ['data:image/png;base64,late-gallery-output'],
       actualParams: {},
       actualParamsList: [],
       revisedPrompts: [],
     })
-    vi.mocked(removeKeyedBackgroundFromDataUrl).mockImplementationOnce(() => new Promise((resolve) => {
-      resolvePostProcess = resolve
-    }))
+    vi.mocked(removeKeyedBackgroundFromDataUrl).mockImplementationOnce(() => postProcess.promise)
     useStore.setState({
       settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
       appMode: 'gallery',
@@ -2891,18 +2940,15 @@ describe('task deletion', () => {
     })
 
     await submitTask()
-    for (let i = 0; i < 10 && !vi.mocked(removeKeyedBackgroundFromDataUrl).mock.calls.length; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(removeKeyedBackgroundFromDataUrl).toHaveBeenCalledTimes(1))
     const runningTask = useStore.getState().tasks[0]
     expect(runningTask?.status).toBe('running')
     expect(await getAllImageIds()).toHaveLength(1)
 
     await removeTask(runningTask)
-    resolvePostProcess('data:image/png;base64,late-transparent-output')
-    for (let i = 0; i < 10 && (await getAllImageIds()).length > 0; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    postProcess.resolve('data:image/png;base64,late-transparent-output')
+    await postProcess.promise
+    await vi.waitFor(async () => expect(await getAllImageIds()).toEqual([]))
 
     expect(useStore.getState().tasks).toEqual([])
     expect(await getAllImageIds()).toEqual([])
@@ -2911,10 +2957,10 @@ describe('task deletion', () => {
   it('clears stream previews and ignores partial images arriving after deletion', async () => {
     const { callImageApi } = await import('./lib/api')
     let emitPartialImage: () => void = () => {}
-    let resolveApi: (result: Awaited<ReturnType<typeof callImageApi>>) => void = () => {}
+    const request = deferred<Awaited<ReturnType<typeof callImageApi>>>()
     vi.mocked(callImageApi).mockImplementationOnce((opts) => {
       emitPartialImage = () => opts.onPartialImage?.({ image: 'data:image/png;base64,partial', requestIndex: 1 })
-      return new Promise((resolve) => { resolveApi = resolve })
+      return request.promise
     })
     useStore.setState({
       settings: { ...DEFAULT_SETTINGS, apiKey: 'test-key' },
@@ -2924,9 +2970,7 @@ describe('task deletion', () => {
     })
 
     await submitTask()
-    for (let i = 0; i < 10 && !vi.mocked(callImageApi).mock.calls.length; i += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(callImageApi).toHaveBeenCalledTimes(1))
     const runningTask = useStore.getState().tasks[0]
     emitPartialImage()
     expect(useStore.getState().streamPreviews[runningTask.id]).toContain('partial')
@@ -2939,7 +2983,19 @@ describe('task deletion', () => {
     expect(useStore.getState().streamPreviews[runningTask.id]).toBeUndefined()
     expect(useStore.getState().streamPreviewSlots[runningTask.id]).toBeUndefined()
 
-    resolveApi({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    request.resolve({ images: [], actualParams: {}, actualParamsList: [], revisedPrompts: [] })
+    await request.promise
+    await vi.waitFor(() => {
+      expect(useStore.getState().tasks).toEqual([])
+      expect(useStore.getState().streamPreviews[runningTask.id]).toBeUndefined()
+      expect(useStore.getState().streamPreviewSlots[runningTask.id]).toBeUndefined()
+    })
+  })
+
+  afterEach(async () => {
+    await vi.waitFor(() => {
+      expect(useStore.getState().agentConversations.flatMap((conversation) => conversation.rounds).every((round) => round.status !== 'running')).toBe(true)
+    })
   })
 
   it('keeps deleted-task images that remain referenced by tasks, Agent state, or drafts', async () => {
@@ -3061,8 +3117,8 @@ describe('agent built-in image tool failure', () => {
     await clearTasks()
     await clearImages()
     await clearAgentConversations()
-    vi.mocked(callAgentResponsesApi).mockClear()
-    vi.mocked(callImageApi).mockClear()
+    vi.mocked(callAgentResponsesApi).mockReset()
+    vi.mocked(callImageApi).mockReset()
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
@@ -3451,9 +3507,7 @@ describe('agent built-in image tool failure', () => {
     })
 
     await submitAgentMessage()
-    for (let i = 0; i < 10 && useStore.getState().tasks[0]?.status !== 'error'; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(useStore.getState().tasks[0]?.status).toBe('error'))
 
     const state = useStore.getState()
     const failedTask = state.tasks[0]
@@ -3493,9 +3547,7 @@ describe('agent built-in image tool failure', () => {
     })
 
     await submitAgentMessage()
-    for (let i = 0; i < 10 && useStore.getState().agentConversations[0].rounds[0]?.status !== 'done'; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(useStore.getState().agentConversations[0].rounds[0]?.status).toBe('done'))
 
     const state = useStore.getState()
     const failedTask = state.tasks[0]
@@ -3551,11 +3603,11 @@ describe('agent built-in image tool failure', () => {
     })
 
     await submitAgentMessage()
-    for (let i = 0; i < 20; i += 1) {
+    await vi.waitFor(() => {
       const state = useStore.getState()
-      if (state.agentConversations[0].rounds[0]?.status === 'done' && !state.tasks[0]?.rawResponsePayload?.includes('ig-deleted')) break
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+      expect(state.agentConversations[0].rounds[0]?.status).toBe('done')
+      expect(state.tasks[0]?.rawResponsePayload).not.toContain('ig-deleted')
+    })
 
     const state = useStore.getState()
     const round = state.agentConversations[0].rounds[0]
@@ -3585,11 +3637,11 @@ describe('agent built-in image tool failure', () => {
     })
 
     await submitAgentMessage()
-    for (let i = 0; i < 20; i += 1) {
+    await vi.waitFor(() => {
       const round = useStore.getState().agentConversations[0].rounds[0]
-      if (round?.status === 'error' && !JSON.stringify(round.responseOutput).includes('ig-deleted-failure')) break
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+      expect(round).toMatchObject({ status: 'error', error: 'stream failed' })
+      expect(JSON.stringify(round.responseOutput)).not.toContain('ig-deleted-failure')
+    })
 
     const round = useStore.getState().agentConversations[0].rounds[0]
     expect(round).toMatchObject({ status: 'error', error: 'stream failed' })
@@ -3619,11 +3671,11 @@ describe('agent built-in image tool failure', () => {
     await submitAgentMessage()
     await outputWritten
     stopAgentResponse('conversation-a')
-    for (let i = 0; i < 20; i += 1) {
+    await vi.waitFor(() => {
       const round = useStore.getState().agentConversations[0].rounds[0]
-      if (round?.status === 'error' && !JSON.stringify(round.responseOutput).includes('ig-deleted-abort')) break
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+      expect(round).toMatchObject({ status: 'error', error: '已停止生成。' })
+      expect(JSON.stringify(round.responseOutput)).not.toContain('ig-deleted-abort')
+    })
 
     const round = useStore.getState().agentConversations[0].rounds[0]
     expect(round).toMatchObject({ status: 'error', error: '已停止生成。' })
@@ -3662,13 +3714,13 @@ describe('agent built-in image tool failure', () => {
     })
 
     await submitAgentMessage()
-    for (let i = 0; i < 20; i += 1) {
+    await vi.waitFor(() => {
       const state = useStore.getState()
       const recoveryTask = state.tasks.find((item) => item.agentToolCallId === 'recovery-call')
       const responseOutput = JSON.stringify(state.agentConversations[0].rounds[0]?.responseOutput)
-      if (recoveryTask?.falRecoverable && !responseOutput.includes('ig-deleted-recovery')) break
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+      expect(recoveryTask?.falRecoverable).toBe(true)
+      expect(responseOutput).not.toContain('ig-deleted-recovery')
+    })
 
     const state = useStore.getState()
     const recoveryTask = state.tasks.find((item) => item.agentToolCallId === 'recovery-call')
@@ -3693,8 +3745,8 @@ describe('agent batch reference resolution', () => {
     await clearImages()
     await putImage(imageA)
     await putImage(imageB)
-    vi.mocked(callAgentResponsesApi).mockClear()
-    vi.mocked(callBatchImageSingle).mockClear()
+    vi.mocked(callAgentResponsesApi).mockReset()
+    vi.mocked(callBatchImageSingle).mockReset().mockImplementation(callBatchImageSingleImplementation)
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
@@ -3802,9 +3854,7 @@ describe('agent batch reference resolution', () => {
 
     await submitAgentMessage()
 
-    for (let i = 0; i < 5 && vi.mocked(callBatchImageSingle).mock.calls.length === 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalled())
     expect(callBatchImageSingle).toHaveBeenCalled()
     const batchArgs = vi.mocked(callBatchImageSingle).mock.calls[0][0]
     expect(batchArgs.referenceImageDataUrls).toEqual([imageB.dataUrl])
@@ -3840,20 +3890,27 @@ describe('agent batch reference resolution', () => {
 
     await submitAgentMessage()
 
-    for (let i = 0; i < 5 && vi.mocked(callBatchImageSingle).mock.calls.length === 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 0))
-    }
+    await vi.waitFor(() => expect(callBatchImageSingle).toHaveBeenCalled())
     expect(callBatchImageSingle).toHaveBeenCalled()
     const batchArgs = vi.mocked(callBatchImageSingle).mock.calls[0][0]
     expect(batchArgs.referenceImageDataUrls).toEqual([imageA.dataUrl])
     expect(batchArgs.referenceIds).toEqual(['round-3-reference-1'])
   })
+
+  afterEach(async () => {
+    await vi.waitFor(() => {
+      expect(useStore.getState().agentConversations.flatMap((conversation) => conversation.rounds).every((round) => round.status !== 'running')).toBe(true)
+    })
+  })
 })
 
 describe('agent assistant regeneration', () => {
   const responsesProfile = createDefaultOpenAIProfile({ id: 'openai-responses', apiKey: 'openai-key', apiMode: 'responses' })
+  let response: ReturnType<typeof deferred<Awaited<ReturnType<typeof callAgentResponsesApi>>>>
 
   beforeEach(() => {
+    response = deferred<Awaited<ReturnType<typeof callAgentResponsesApi>>>()
+    vi.mocked(callAgentResponsesApi).mockReset().mockImplementation(() => response.promise)
     useStore.setState({
       settings: normalizeSettings({
         ...DEFAULT_SETTINGS,
@@ -3890,6 +3947,19 @@ describe('agent assistant regeneration', () => {
       toast: null,
       showToast: vi.fn(),
       setConfirmDialog: vi.fn(),
+    })
+  })
+
+  afterEach(async () => {
+    response.resolve({
+      text: '已完成。',
+      images: [],
+      outputItems: [{ type: 'message', content: [{ type: 'output_text', text: '已完成。' }] }],
+      responseId: 'response-regenerated',
+    })
+    await response.promise
+    await vi.waitFor(() => {
+      expect(useStore.getState().agentConversations.flatMap((conversation) => conversation.rounds).every((round) => round.status !== 'running')).toBe(true)
     })
   })
 
