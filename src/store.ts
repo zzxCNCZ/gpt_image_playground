@@ -52,7 +52,7 @@ import { orderInputImagesForMask } from './lib/mask'
 import { getChangedParams, normalizeParamsForSettings } from './lib/paramCompatibility'
 import { createTransparentOutputMeta, getTransparentRequestParams, removeKeyedBackgroundFromDataUrl } from './lib/transparentImage'
 import { blobToDataUrl, fileToDataUrl } from './lib/dataUrl'
-import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteCachedThumbnail, deleteImageCacheEntry, ensureImageCached, scheduleThumbnailBackfill } from './lib/imageCache'
+import { cacheImage, cacheThumbnail, clearImageCaches, deleteCachedImage, deleteImageCacheEntry, ensureImageCached, scheduleThumbnailBackfill } from './lib/imageCache'
 import { hasActiveDataOperations } from './lib/dataOperations'
 import { formatExportFileTime } from './lib/exportFileName'
 import { buildExportZip, createExportBlob, getExportImageEstimatedBytes, getExportZipPlan, MAX_EXPORT_ZIP_BYTES, readExportZip, readExportZipFileAsDataUrl, readExportZipManifest } from './lib/exportZip'
@@ -2465,8 +2465,7 @@ async function deleteUnreferencedImageIds(imageIds: Iterable<string>) {
   for (const imgId of candidates) {
     if (stillUsed.has(imgId)) continue
     await deleteImage(imgId)
-    deleteCachedImage(imgId)
-    deleteCachedThumbnail(imgId)
+    deleteImageCacheEntry(imgId)
   }
 }
 
@@ -4748,54 +4747,34 @@ export async function editOutputs(task: TaskRecord) {
   showToast(`已添加 ${added} 张输出图到输入`, 'success')
 }
 
+async function removeTasks(taskIds: string[]) {
+  const state = useStore.getState()
+  const toDelete = new Set(taskIds)
+  const selectedTaskIds = state.selectedTaskIds.filter((id) => !toDelete.has(id))
+  if (selectedTaskIds.length !== state.selectedTaskIds.length) state.setSelectedTaskIds(selectedTaskIds)
+
+  const deletedTasks = state.tasks.filter((task) => toDelete.has(task.id))
+  if (deletedTasks.length === 0) return 0
+
+  const remaining = await scrubAgentOutputPayloadsForDeletedTasks(
+    deletedTasks,
+    state.tasks.filter((task) => !toDelete.has(task.id)),
+  )
+  const deletedImageIds = new Set<string>()
+  for (const task of deletedTasks) addTaskReferencedImageIds(deletedImageIds, task)
+
+  state.setTasks(remaining)
+  for (const task of deletedTasks) await dbDeleteTask(task.id)
+  await deleteUnreferencedImageIds(deletedImageIds)
+  return deletedTasks.length
+}
+
 /** 删除多条任务 */
 export async function removeMultipleTasks(taskIds: string[]) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast, selectedTaskIds } = useStore.getState()
-  
   if (!taskIds.length) return
 
-  const toDelete = new Set(taskIds)
-  const deletedTasks = tasks.filter(t => toDelete.has(t.id))
-  const remaining = await scrubAgentOutputPayloadsForDeletedTasks(deletedTasks, tasks.filter(t => !toDelete.has(t.id)))
-
-  // 收集所有被删除任务的关联图片
-  const deletedImageIds = new Set<string>()
-  for (const t of tasks) {
-    if (toDelete.has(t.id)) {
-      addTaskReferencedImageIds(deletedImageIds, t)
-    }
-  }
-
-  setTasks(remaining)
-  for (const id of taskIds) {
-    await dbDeleteTask(id)
-  }
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    addTaskReferencedImageIds(stillUsed, t)
-  }
-  addAgentReferencedImageIds(stillUsed)
-  addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of deletedImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      deleteCachedImage(imgId)
-      deleteCachedThumbnail(imgId)
-    }
-  }
-
-  // 如果删除的任务在选中列表中，则移除
-  const newSelection = selectedTaskIds.filter(id => !toDelete.has(id))
-  if (newSelection.length !== selectedTaskIds.length) {
-    useStore.getState().setSelectedTaskIds(newSelection)
-  }
-
-  showToast(`已删除 ${taskIds.length} 个任务`, 'success')
+  const deletedCount = await removeTasks(taskIds)
+  useStore.getState().showToast(`已删除 ${deletedCount} 个任务`, 'success')
 }
 
 /** 删除所有失败任务 */
@@ -4826,41 +4805,8 @@ export async function clearFailedTasks(taskIds?: string[]) {
 
 /** 删除单条任务 */
 export async function removeTask(task: TaskRecord) {
-  const { tasks, setTasks, inputImages, galleryInputDraft, showToast } = useStore.getState()
-
-  // 收集此任务关联的图片
-  const taskImageIds = new Set([
-    ...(task.inputImageIds || []),
-    ...(task.maskImageId ? [task.maskImageId] : []),
-    ...(task.outputImages || []),
-    ...(task.transparentOriginalImages || []),
-    ...(task.streamPartialImageIds || []),
-  ])
-
-  // 从列表移除
-  const remaining = await scrubAgentOutputPayloadsForDeletedTasks([task], tasks.filter((t) => t.id !== task.id))
-  setTasks(remaining)
-  await dbDeleteTask(task.id)
-
-  // 找出其他任务仍引用的图片
-  const stillUsed = new Set<string>()
-  for (const t of remaining) {
-    addTaskReferencedImageIds(stillUsed, t)
-  }
-  addAgentReferencedImageIds(stillUsed)
-  addInputDraftReferencedImageIds(stillUsed, galleryInputDraft)
-  for (const img of inputImages) stillUsed.add(img.id)
-
-  // 删除孤立图片
-  for (const imgId of taskImageIds) {
-    if (!stillUsed.has(imgId)) {
-      await deleteImage(imgId)
-      deleteCachedImage(imgId)
-      deleteCachedThumbnail(imgId)
-    }
-  }
-
-  showToast('任务已删除', 'success')
+  await removeTasks([task.id])
+  useStore.getState().showToast('任务已删除', 'success')
 }
 
 /** 清空数据选项 */
