@@ -2841,13 +2841,20 @@ describe('task deletion', () => {
     })
     const firstCommitStarted = deferred<void>()
     const releaseFirstCommit = deferred<void>()
+    let transactionQueue = Promise.resolve()
     let commitCount = 0
-    vi.mocked(commitTaskDeletion).mockImplementation(async (...args) => {
-      await commitTaskDeletionImplementation(...args)
-      commitCount += 1
-      if (commitCount !== 1) return
-      firstCommitStarted.resolve()
-      await releaseFirstCommit.promise
+    vi.mocked(commitTaskDeletion).mockImplementation((...args) => {
+      const commitIndex = ++commitCount
+      const transaction = transactionQueue.then(async () => {
+        if (commitIndex === 1) {
+          firstCommitStarted.resolve()
+          await releaseFirstCommit.promise
+        }
+        await commitTaskDeletionImplementation(...args)
+        return undefined
+      })
+      transactionQueue = transaction.catch(() => {})
+      return transaction
     })
 
     const deletionA = removeTask(deletedA)
@@ -2855,24 +2862,37 @@ describe('task deletion', () => {
     useStore.setState((state) => ({
       tasks: [created, ...state.tasks.map((item) => item.id === existing.id ? { ...item, prompt: 'updated' } : item)],
     }))
-    await putDbTask(created)
-    await putDbTask({ ...existing, prompt: 'updated' })
+    const createTask = putDbTask(created)
+    const updateTask = putDbTask({ ...existing, prompt: 'updated' })
     const deletionB = removeTask(deletedB)
-    await deletionB
     releaseFirstCommit.resolve()
-    await deletionA
+    await Promise.all([deletionA, deletionB, createTask, updateTask])
+    await transactionQueue
 
     const state = useStore.getState()
     expect(state.tasks.map((item) => item.id)).toEqual([created.id, existing.id])
     expect(state.tasks.find((item) => item.id === existing.id)?.prompt).toBe('updated')
-    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('base64-a')
-    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('base64-b')
+    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-a')
+    expect(state.tasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-b')
+    expect(JSON.stringify(state.agentConversations)).not.toContain('call-a')
+    expect(JSON.stringify(state.agentConversations)).not.toContain('call-b')
     expect(state.selectedTaskIds).toEqual([])
+    expect(commitTaskDeletion).toHaveBeenCalledTimes(2)
+    const firstStoredUpdate = vi.mocked(commitTaskDeletion).mock.calls[0][1].find((item) => item.id === existing.id)
+    const secondStoredUpdate = vi.mocked(commitTaskDeletion).mock.calls[1][1].find((item) => item.id === existing.id)
+    expect(firstStoredUpdate?.rawResponsePayload).not.toContain('call-a')
+    expect(firstStoredUpdate?.rawResponsePayload).toContain('call-b')
+    expect(secondStoredUpdate?.prompt).toBe('updated')
+    expect(secondStoredUpdate?.rawResponsePayload).not.toContain('call-a')
+    expect(secondStoredUpdate?.rawResponsePayload).not.toContain('call-b')
     const storedTasks = await getAllTasks()
     expect(storedTasks.map((item) => item.id).sort()).toEqual([created.id, existing.id].sort())
     expect(storedTasks.find((item) => item.id === existing.id)?.prompt).toBe('updated')
-    expect(storedTasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('base64-a')
-    expect(storedTasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('base64-b')
+    expect(storedTasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-a')
+    expect(storedTasks.find((item) => item.id === existing.id)?.rawResponsePayload).not.toContain('call-b')
+    const storedConversations = await getAllAgentConversations()
+    expect(JSON.stringify(storedConversations)).not.toContain('call-a')
+    expect(JSON.stringify(storedConversations)).not.toContain('call-b')
   })
 
   it('counts duplicate and missing ids only when they match an existing task', async () => {
