@@ -32,21 +32,21 @@
 <table>
 <tr>
 <td width="180" align="center" valign="middle">
-  <a href="https://www.5cookie.cc"><img src="https://github.com/user-attachments/assets/c2a1e98e-c172-49ff-b361-60bb32601daa" alt="5Cookie Code" width="150"></a>
+  <a href="https://moyuu.cc/register?aff=z95r"><img src="https://github.com/user-attachments/assets/b5b14eaa-8f24-41fd-89aa-d681400a3c84" alt="摸鱼 AI" width="150"></a>
 </td>
-<td valign="middle"><b><a href="https://www.5cookie.cc">5Cookie Code</a></b>&nbsp;是一家稳定高速的 API 中继服务提供商，为 Image-2、Claude Code、Codex 等平台或模型提供 API 中继服务。面向个人、团队和企业用户提供 AI 编码服务和 AI 生图服务。</td>
+<td valign="middle"><b><a href="https://moyuu.cc/register?aff=z95r">摸鱼 AI</a></b>&nbsp;，让 AI API 接入更简单。明码标价，充值 1:1，支持 GPT、Claude、Gemini 等主流模型，重新定义「便宜 · 稳定 · 高速」</td>
+</tr>
+<tr>
+<td width="180" align="center" valign="middle">
+  <a href="https://jucodex.com/register?aff=3JDW"><img src="https://github.com/user-attachments/assets/1980f1ef-d594-457d-b7e4-a0dbff467984" alt="JuCodex" width="150"></a>
+</td>
+<td valign="middle"><b><a href="https://jucodex.com/register?aff=3JDW">JuCodex</a></b>&nbsp;为企业级用户打造的高可用、低延迟、极致性价比的中转站，提供 Codex、Claude Code、Grok 等主流大模型中转服务，新用户注册送 3 元（QQ 邮箱），永久承诺 0 水 0 替、模型 100% 保真。<a href="https://image.jucodex.com">生图工作台</a></td>
 </tr>
 <tr>
 <td width="180" align="center" valign="middle">
   <a href="https://9527code.com/"><img src="https://github.com/user-attachments/assets/29eba620-e902-42f9-9c3b-2fb2d7b2e310" alt="9527 CODE" width="150"></a>
 </td>
 <td valign="middle"><b><a href="https://9527code.com/">9527 CODE</a></b>&nbsp;是企业级满血 AI 中转服务平台，专注提供 Claude Code、Codex 等主流模型的高稳定中转能力，为企业级 AI 使用提供稳定、合规、高效的一站式解决方案。</td>
-</tr>
-<tr>
-<td width="180" align="center" valign="middle">
-  <a href="https://code0.ai/?source=cooksleep"><img src="https://github.com/user-attachments/assets/515dc874-3b2b-4355-aeae-04eba6e6505d" alt="Code0" width="150"></a>
-</td>
-<td valign="middle"><b><a href="https://code0.ai/?source=cooksleep">Code0</a></b>&nbsp;是一家稳定高速的 AI API 中转服务商，支持 gpt-image、Claude Code、Codex 等主流模型，提供即充即用的 AI 生图与编码能力，面向个人、团队与企业用户。<a href="https://gpt-image-playground.cooksleep.dev/?apiUrl=https%3A%2F%2Fcode0.ai%2Fv1&apiMode=images&profileName=Code0">点此导入配置</a></td>
 </tr>
 <tr>
 <td width="180" align="center" valign="middle">
@@ -58,7 +58,7 @@
 <td width="180" align="center" valign="middle">
   <a href="https://api.muteki.site/register?aff=CookSleep&promo=CookSleep"><img src="https://github.com/user-attachments/assets/0247d44d-d76b-458b-b8f5-9714ec46e7de" alt="MaruCode" width="150"></a>
 </td>
-<td valign="middle"><b><a href="https://api.muteki.site/register?aff=CookSleep&promo=CookSleep">MaruCode</a></b>&nbsp;是一家偶尔做做慈善的小破站 API，自营号池，主要提供 Codex、Claude Code、GPT Image 等主流模型，明码标价(Codex 0.3x, CC 1.5x)，透明汇率(1:1)，<a href="https://api.muteki.site/register?aff=CookSleep&promo=CookSleep">新用户注册送 2 刀</a></td>
+<td valign="middle"><b><a href="https://api.muteki.site/register?aff=CookSleep&promo=CookSleep">MaruCode</a></b>&nbsp;是一家偶尔做做慈善的小破站 API，自营号池，主要提供 Codex、Claude Code、GPT Image 等主流模型，明码标价(Codex 0.3x, CC 1.5x)，透明汇率(1:1)，<a href="https://api.muteki.site/register?aff=CookSleep&promo=CookSleep">新用户注册送 2 刀</a>。<a href="https://images-2.muteki.site">生图工作台🖼️</a></td>
 </tr>
 <tr>
 <td width="180" align="center" valign="middle">
